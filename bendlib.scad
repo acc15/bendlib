@@ -6,7 +6,10 @@ function fac(n) = n <= 1 ? 1 : n * fac(n - 1);
 function a_cast(a, l) = len(a) == undef ? [ for (i = [0:l]) a ] : a;
 
 /** Computes sum of all elements in array */
-function a_sum(a, i = 0) = i >= len(a) ? 0 : a[i] + a_sum(a, i);
+function a_sum(a, i = 0) = i >= len(a) ? 0 : a[i] + a_sum(a, i + 1);
+
+/** Checks whether v is zero or not */
+function a_zero(v, i = 0) = i >= len(v) ? true: v[i] == 0 && a_zero(v, i + 1);
 
 /** Computes squares vector norm */
 function a_norm_sq(v) = a_sum([ for (e = v) e * e ]);
@@ -52,10 +55,15 @@ function m_rot_y(angle) = [[cos(angle),0,-sin(angle),0],[0,1,0,0],[sin(angle),0,
 function m_rot_z(angle) = [[cos(angle),-sin(angle),0,0],[sin(angle),cos(angle),0,0],[0,0,1,0],[0,0,0,1]];
 
 /** Creates rotation matrix from quaternion */
-function m_rot_q(q) = [[q[0],-q[1],-q[2],-q[3]], [q[1],q[0],-q[3],q[2]], [q[2],q[3],q[0],-q[1]],[q[3],-q[2],q[1],q[0]]];
+function m_rot_q(q) = let(x = q[1], y = q[2], z = q[3], w = q[0], xw = 2*x*w, yw = 2*y*w, zw = 2*z*w) [
+    [1-2*y*y-2*z*z, 2*x*y - zw, 2*x*z + yw, 0],
+    [2*x*y+zw, 1-2*x*x-2*z*z, 2*y*z - xw, 0],
+    [2*x*z-yw, 2*y*z+xw, 1-2*x*x-2*y*y, 0],
+    [0,0,0,1]
+];
 
 /** Creates rotation matrix from plane normal */
-function m_rot_v(v) = let(x = a_unit(v), y = a_unit([-x[1],x[0],0]), z = a_unit(cross(x, y))) 
+function m_rot_v(v) = let(z = a_unit(v), y = a_unit(z[0] == 0 && z[1] == 0 ? cross(z, [0,1,0]) : cross(z, [0,0,1])), x = a_unit(cross(z, y)))
     [[x[0],y[0],z[0],0],[x[1],y[1],z[1],0],[x[2],y[2],z[2],0],[0,0,0,1]];
 
 /** Creates identity matrix */
