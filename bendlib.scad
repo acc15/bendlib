@@ -1,14 +1,14 @@
 
 /** Computes factorial */
-function bl_fac(n) = n <= 1 ? 1 : n * fac(n - 1);
+function bl_fac(n) = n <= 1 ? 1 : n * bl_fac(n - 1);
 
 /** Normalizes array such that if `a` is array then return `a`, otherwise generates array with values `a` */
-function bl_cast(a, l) = len(a) == undef ? [ for (i = [0:l-1]) a ] : a;
+function bl_cast(a, l) = is_list(a) ? a : [ for (i = [0:l-1]) a ];
 
 /** Computes sum of all elements in array */
 function bl_sum(a, i = 0) = i >= len(a) ? 0 : a[i] + bl_sum(a, i + 1);
 
-/** Checks whether v is zero or not */
+/** Checks whether each element of v is zero or not (zero vector with zero norm) */
 function bl_zero(v, i = 0) = i >= len(v) ? true: v[i] == 0 && bl_zero(v, i + 1);
 
 function bl_fill(v, l) = [ for (i = [0:l-1]) v ];
@@ -19,8 +19,19 @@ function bl_norm_sq(v) = bl_sum([ for (e = v) e * e ]);
 /** Computes unit vector */
 function bl_unit(v) = v / norm(v);
 
+function bl_unit_identity(v, i) = bl_zero(v) ? [ for (j = [0:len(v)-1]) j == i ? 1 : 0 ] : bl_unit(v);
+
+/** Extracts elements from `l` to `r`, not including `r` */
+function bl_sub(a, l, r = undef) = let (
+    ol = max(0, l < 0 ? len(a) + l : l), 
+    or = max(ol, min(len(a), r == undef ? len(a) : r < 0 ? len(a) + r : r))
+) [ for (i = [ol: or - 1]) a[i] ];
+
 /** Takes first `l` elements from `a` */
-function bl_head(a,l) = [ for (i = [0:min(len(a),l)-1]) a[i] ];
+function bl_head(a,l) = bl_sub(a, 0, l);
+
+/** Takes last `l` elements from `a` */
+function bl_tail(a, l) = bl_sub(a, -l);
 
 /** Takes first `l` elements from `a` then from `b` */
 function bl_head_def(a,b,l) = let(k = min(l,len(a))) concat([for(i=[0:k-1]) a[i]], [for(i=[k:l-1]) b[i]]);
@@ -74,8 +85,8 @@ function bl_ort(v) = [-v[1],v[2],-v[0]];
 function bl_rot_v(v) = let(
     up = [0,0,1],
     f = bl_unit(v),
-    s = bl_unit(cross(f, up)),
-    u = bl_unit(cross(s, f))
+    s = bl_unit_identity(cross(f, up), 0),
+    u = bl_unit_identity(cross(s, f), 1)
 )
     [
         [s[0],u[0],f[0],0],
@@ -104,21 +115,60 @@ function bl_tr(v, m) = let(l = len(m), mn = bl_normalize(m))
     ? bl_head(mn * [ for (i = [0:l-1]) i < len(v) ? v[i] : i == l-1 ? 1 : 0 ], len(v))
     : [ for (x = v) bl_tr(x, mn) ];
 
-/** Approximation of ellipse perimeter (about 5% error) */
-function bl_ellipse_perimeter(r) = let(ra = bl_cast(r, 2)) 
-    2 * PI * ((ra[0] == ra[1]) ? ra[0] : sqrt((ra[0]*ra[0] + ra[1]*ra[1]) / 2));
-function bl_arc_steps(r, a) = $fn > 0 ? $fn : ceil(max(min(a / $fa, bl_ellipse_perimeter(r) / $fs), 5));
+/** 
+    Normalizes radius[]/diameter[] values to [x_radius, y_radius] array
+ */
+function bl_radius_cast(r, d) = 
+    r == undef 
+        ? d == undef 
+            ? [undef, undef] 
+            : let (da = concat(d, d)) [ da[0] / 2, da[1] / 2 ]
+        : let(ra = concat(r, r)) [ ra[0], ra[1] ];
 
-function bl_arc_pt(r, a, p = [0,0]) = let(ra = bl_cast(r, 2)) [cos(a) * ra[0] + p[0], sin(a) * ra[1] + p[1]];
-function bl_arc_loop(r, s, e, c, last = true, p = [0,0]) = r == 0 ? [p] : [ for(i = [0 : last ? c : c - 1]) bl_arc_pt(r, s + i * (e - s) / c, p) ];
-function bl_arc(r, s, e, last = true, p = [0,0]) = bl_arc_loop(r, s, e, bl_arc_steps(r, abs(e - s)), last, p);
+/** 
+    Normalizes [start, end] angle array, 
+    if `a` is scalar or single element array then angles is [0, a], 
+    otherwise first two elements are [start, end] angles
+ */
+function bl_angle_cast(a) = let(aa = concat(a)) len(aa) < 2 ? [0, a] : [aa[0], aa[1]];
+
+/** Approximation of ellipse perimeter (about 5% error) */
+function bl_ellipse_perimeter(r, d) = let(ra = bl_radius_cast(r, d)) 
+    2 * PI * ((ra[0] == ra[1]) ? ra[0] : sqrt((ra[0]*ra[0] + ra[1]*ra[1]) / 2));
+
+/** 
+    
+    Computes number of points to draw arc. 
+    Uses original OpenSCAD formula, but expands it to support ellipse arcs:
+    
+        int get_fragments_from_r(double r, double fn, double fs, double fa)
+        {
+             if (r < GRID_FINE) return 3;
+             if (fn > 0.0) return (int)(fn >= 3 ? fn : 3);
+             return (int)ceil(fmax(fmin(360.0 / fa, r*2*M_PI / fs), 5));
+        }
+    
+ */
+function bl_arc_steps(r, d, a) = let(aa = bl_angle_cast(a)) $fn > 0 ? $fn : ceil(max(min(abs(aa[1] - aa[0]) / $fa, bl_ellipse_perimeter(r, d) / $fs), 5));
+
+/** Computes single arc point at given angle `a` */
+function bl_arc_pt(r, d, a, p = [0,0]) = let(ra = bl_radius_cast(r, d)) [cos(a) * ra[0] + p[0], sin(a) * ra[1] + p[1]];
+
+/** Computes arc points using fixed amount of steps */
+function bl_arc_loop(r, d, a, n, l = true, p = [0,0]) =
+    let(ra = bl_radius_cast(r, d), aa = bl_angle_cast(a)) ra[0] == 0 || ra[1] == 0 
+        ? [p] 
+        : [ for(i = [0 : n - (l ? 0 : 1)]) bl_arc_pt(ra, undef, aa[0] + i * (aa[1] - aa[0]) / n, p) ];
+
+/** Computes arc */
+function bl_arc(r, d, a, l = true, p = [0,0]) = bl_arc_loop(r, d, a, bl_arc_steps(r, d, a), l, p);
 
 /** Generates NGON shape */
-function bl_ngon(r, n, p = [0,0]) = bl_arc_loop(r, 0, 360, n, false, p);
+function bl_ngon(r, d, n, p = [0,0]) = bl_arc_loop(r, d, 360, n, false, p);
 
 /** Generates star shape */
-function bl_star(r1, r2, n) = let(ra1 = bl_cast(r1, 2), ra2 = bl_cast(r2, 2), m = n * 2) 
-    [ for (i = [0:m-1]) [ cos(i * 360 / m) * (i % 2 == 0 ? ra1[0] : ra2[0]), sin(i * 360 / m) * (i % 2 == 0 ? ra1[1] : ra2[1]) ] ];
+function bl_star(r, d, n) = let(ra = bl_radius_cast(r, d), m = n * 2) 
+    [ for (i = [0:m-1]) [ cos(i * 360 / m) * (i % 2 == 0 ? ra[0] : ra[1]), sin(i * 360 / m) * (i % 2 == 0 ? ra[0] : ra[1]) ] ];
         
 /** Creates 2d rectangle shape with specified rounded corner radiuses */
 function bl_rect(dim, r = 0, center = false) = let(
@@ -174,29 +224,36 @@ module bl_skin(profiles, loop = false) {
 }
 
 
-function bl_combination(i, n) = bl_fac(n) / (bl_fac(i) * bl_fac(n - i));
-function bl_polynome(i, n, t) = bl_combination(i, n) * pow(t, i) * pow(1 - t, n - i);
-function bl_component(i, n, t, p) = let (b = bl_polynome(i, n, t)) [ for (c = p) c * b ];
-function bl_steps() = $fn > 0 ? $fn : 12;
-function bl_point(points, t, sum, i = 0) = let(n = len(points) - 1) 
-    i > n ? sum : bl_point(points, t, bl_component(i, n, t, points[i]) + sum, i + 1);
-function bl_curve(points, last = true) = len(points <= 2) ? points :
-    let(segments = bl_steps()) [ for (i = [0 : last ? segments : segments - 1]) bl_point(points, i / segments, bl_fill(0, len(points[0]))) ];
+function bl_bezier_combination(i, n) = bl_fac(n) / (bl_fac(i) * bl_fac(n - i));
+function bl_bezier_polynome(i, n, t) = bl_bezier_combination(i, n) * pow(t, i) * pow(1 - t, n - i);
+function bl_bezier_component(i, n, t, p) = let (b = bl_bezier_polynome(i, n, t)) [ for (c = p) c * b ];
+function bl_bezier_steps() = $fn > 0 ? $fn : 12;
+function bl_bezier_point(points, t, sum, i = 0) = let(n = len(points) - 1) 
+    i > n ? sum : bl_bezier_point(points, t, bl_bezier_component(i, n, t, points[i]) + sum, i + 1);
+function bl_bezier(points, last = true) = len(points) <= 2 ? points :
+    let(segments = bl_bezier_steps()) [ for (i = [0 : last ? segments : segments - 1]) bl_bezier_point(points, i / segments, bl_fill(0, len(points[0]))) ];
     
 module bl_line_3(p1, p2, d = 1) {
     v = p2 - p1;
     m = bl_rot_v(v);
-    translate(p1)
-        multmatrix(m)
-            translate([-d/2,-d/2,0])
-                cube([d,d,norm(v)]);
+    translate(p1) {
+        multmatrix(m) {
+            linear_extrude(norm(v)) {
+                children();
+            }
+        }
+    }
 }
    
 module bl_lines_3(points, d, loop = false) {
     for (i = [0:len(points)-2]) 
-        bl_line_3(points[i], points[i+1], d);
+        bl_line_3(points[i], points[i+1], d) {
+            children();
+        }
     if (loop) {
-        bl_line_3(points[len(points)-1], points[0], d);
+        bl_line_3(points[len(points)-1], points[0], d) {
+            children();
+        }
     }
 }
 
@@ -219,7 +276,7 @@ module bl_lines(points, d) {
     for (i = [0:len(points)-1]) 
         bl_line_2(points[i], points[(i+1) % len(points)], d);
 }
-    
+
 module bl_debug_point(pt, f, d) {
     translate([pt[0],pt[1],0]) 
         % color([f, (1 - f), 0]) circle(d = d);
@@ -239,4 +296,27 @@ module bl_debug(points, d = 2) {
     bl_debug_point(points[n-1], 1, d);
 }
  
+function bl_offset_line(l, off) = let(v = l[1] - l[0], ov = bl_unit([v[1], -v[0]]) * off) [ l[0] + ov, l[1] + ov ];
 
+function bl_line_intersection(lines) = let(
+    l1 = lines[0], 
+    l2 = lines[1], 
+    v1 = l1[0] - l1[1],
+    v2 = l2[0] - l2[1],
+    q1 = l1[0].x*l1[1].y - l1[0].y*l1[1].x,
+    q2 = l2[0].x*l2[1].y - l2[0].y*l2[1].x,
+    d = v1.x*v2.y - v1.y*v2.x
+) abs(d) < 0.0001 ? undef : [ 
+(q1*v2.x - v1.x*q2) / d, 
+(q1*v2.y - v1.y*q2) / d
+];
+
+function bl_offset_poly(poly, off) = let(n = len(poly)) [ for (i = [0:n-1]) let(
+    p1 = poly[i > 0 ? i - 1 : n - 1],
+    p2 = poly[i],
+    p3 = poly[(i + 1) % n],
+    l1 = bl_offset_line([p1, p2], off),
+    l2 = bl_offset_line([p2, p3], off),
+    pi = bl_line_intersection([l1, l2]),
+    pt = pi == undef ? l1[1] : pi
+) pt ];
